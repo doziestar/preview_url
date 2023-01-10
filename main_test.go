@@ -6,7 +6,7 @@ import (
 )
 
 func TestGetLinkPreviewItems(t *testing.T) {
-	uri := "http://www.example.com"
+	uri := "https://doziesiky.com"
 	maxRedirect := 10
 
 	scraper := NewScraper(uri, maxRedirect)
