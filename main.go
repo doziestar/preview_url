@@ -12,23 +12,30 @@ import (
 	"golang.org/x/net/html"
 )
 
-var (
-	EscapedFragment string = "_escaped_fragment_="
-	fragmentRegexp         = regexp.MustCompile("#!(.*)")
+// Constants to avoid magic strings in code
+const (
+	EscapedFragment = "_escaped_fragment_="
+	UserAgent       = "link-preview-scraper"
 )
 
+// Regex for URL fragment matching
+var fragmentRegexp = regexp.MustCompile("#!(.*)")
+
+// Scraper Struct for holding scraper related data
 type Scraper struct {
-	Url                *url.URL
-	EscapedFragmentUrl *url.URL
-	MaxRedirect        int
+	BaseURL            *url.URL
+	EscapedFragmentURL *url.URL
+	MaxRedirects       int
 	client             *http.Client
 }
 
+// Document Struct for holding the scraped document data
 type Document struct {
 	Body    bytes.Buffer
 	Preview DocumentPreview
 }
 
+// DocumentPreview Struct for holding the preview data of the scraped document
 type DocumentPreview struct {
 	Icon        string
 	Name        string
@@ -38,43 +45,42 @@ type DocumentPreview struct {
 	Link        string
 }
 
-func NewScraper(uri string, maxRedirect int) *Scraper {
-	u, err := url.Parse(uri)
+// NewScraper initializes a new scraper
+func NewScraper(uri string, maxRedirects int) (*Scraper, error) {
+	parsedURL, err := url.Parse(uri)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to parse URL: %w", err)
 	}
 
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= maxRedirect {
-				return fmt.Errorf("too many redirects")
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("exceeded max redirects: %d", len(via))
 			}
 			return nil
 		},
 	}
 
-	return &Scraper{Url: u, MaxRedirect: maxRedirect, client: client}
+	return &Scraper{BaseURL: parsedURL, MaxRedirects: maxRedirects, client: client}, nil
 }
 
-func (scraper *Scraper) GetLinkPreviewItems() (*Document, error) {
-	if strings.Contains(scraper.Url.String(), "#!") {
-		if err := scraper.toFragmentUrl(); err != nil {
-			return nil, err
+// GetPreviewMetadata fetches and parses the document for preview metadata
+func (s *Scraper) GetPreviewMetadata() (*Document, error) {
+	if s.requiresEscapedFragmentURL() {
+		if err := s.createEscapedFragmentURL(); err != nil {
+			return nil, fmt.Errorf("failed to create escaped fragment URL: %w", err)
 		}
 	}
-	if strings.Contains(scraper.Url.String(), EscapedFragment) {
-		scraper.EscapedFragmentUrl = scraper.Url
-	}
 
-	req, err := http.NewRequest("GET", scraper.getUrl(), nil)
+	req, err := http.NewRequest("GET", s.getTargetURL(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "link-preview-scraper")
+	req.Header.Set("User-Agent", UserAgent)
 
-	resp, err := scraper.client.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -83,132 +89,168 @@ func (scraper *Scraper) GetLinkPreviewItems() (*Document, error) {
 	}
 
 	var buf bytes.Buffer
-	_, err = io.Copy(&buf, resp.Body)
-	if err != nil {
-		return nil, err
+	if _, err := io.Copy(&buf, resp.Body); err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	doc := &Document{}
-	err = scraper.ParseDocument(buf.Bytes(), doc)
-	if err != nil {
-		return nil, err
+	if err := s.parseHTML(buf.Bytes(), doc); err != nil {
+		return nil, fmt.Errorf("failed to parse HTML: %w", err)
 	}
 	return doc, nil
 }
 
-func (scraper *Scraper) toFragmentUrl() error {
-	unescapedurl, err := url.QueryUnescape(scraper.Url.String())
+// requiresEscapedFragmentURL checks whether the URL has a fragment that needs to be escaped
+func (s *Scraper) requiresEscapedFragmentURL() bool {
+	return strings.Contains(s.BaseURL.String(), "#!") || strings.Contains(s.BaseURL.String(), EscapedFragment)
+}
+
+// createEscapedFragmentURL creates an escaped fragment URL from the base URL
+func (s *Scraper) createEscapedFragmentURL() error {
+	unescapedURL, err := url.QueryUnescape(s.BaseURL.String())
 	if err != nil {
 		return err
 	}
-	matches := fragmentRegexp.FindStringSubmatch(unescapedurl)
+
+	// Code to generate the escaped fragment URL removed for brev
+	// Matching fragments in the URL
+	matches := fragmentRegexp.FindStringSubmatch(unescapedURL)
+
+	// Adding the escaped fragment to the URL
 	if len(matches) > 1 {
 		escapedFragment := EscapedFragment
 		for _, r := range matches[1] {
 			b := byte(r)
-			if avoidByte(b) {
+			if isAvoidableByte(b) {
 				continue
 			}
-			if escapeByte(b) {
+			if shouldEscapeByte(b) {
 				escapedFragment += url.QueryEscape(string(r))
 			} else {
 				escapedFragment += string(r)
 			}
 		}
 
-		p := "?"
-		if len(scraper.Url.Query()) > 0 {
-			p = "&"
+		// Preparing the final URL
+		paramPrefix := "?"
+		if len(s.BaseURL.Query()) > 0 {
+			paramPrefix = "&"
 		}
-		fragmentUrl, err := url.Parse(strings.Replace(unescapedurl, matches[0], p+escapedFragment, 1))
+		escapedFragmentURL, err := url.Parse(strings.Replace(unescapedURL, matches[0], paramPrefix+escapedFragment, 1))
 		if err != nil {
 			return err
 		}
-		scraper.EscapedFragmentUrl = fragmentUrl
+		s.EscapedFragmentURL = escapedFragmentURL
 	} else {
-		p := "?"
-		if len(scraper.Url.Query()) > 0 {
-			p = "&"
+		paramPrefix := "?"
+		if len(s.BaseURL.Query()) > 0 {
+			paramPrefix = "&"
 		}
-		fragmentUrl, err := url.Parse(unescapedurl + p + EscapedFragment)
+		escapedFragmentURL, err := url.Parse(unescapedURL + paramPrefix + EscapedFragment)
 		if err != nil {
 			return err
 		}
-		scraper.EscapedFragmentUrl = fragmentUrl
+		s.EscapedFragmentURL = escapedFragmentURL
 	}
 	return nil
 }
 
-func (scraper *Scraper) getUrl() string {
-	if scraper.EscapedFragmentUrl != nil {
-		return scraper.EscapedFragmentUrl.String()
+// getTargetURL returns the appropriate URL to scrape
+func (s *Scraper) getTargetURL() string {
+	if s.EscapedFragmentURL != nil {
+		return s.EscapedFragmentURL.String()
 	}
-	return scraper.Url.String()
+	return s.BaseURL.String()
 }
 
-func (scraper *Scraper) ParseDocument(htmlContent []byte, doc *Document) error {
+// parseHTML parses the HTML content and fills the document with relevant preview data
+func (s *Scraper) parseHTML(htmlContent []byte, doc *Document) error {
 	// Parsing the HTML
 	node, err := html.Parse(bytes.NewReader(htmlContent))
 	if err != nil {
 		return err
 	}
 
-	// Use a recursive function to traverse the nodes in the HTML tree
-	var f func(*html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "meta" {
-			var name, content string
-			for _, attr := range n.Attr {
-				if attr.Key == "name" {
-					name = attr.Val
-				} else if attr.Key == "content" {
-					content = attr.Val
-				}
-			}
-
-			if name == "icon" {
-				doc.Preview.Icon = content
-			} else if name == "name" {
-				doc.Preview.Name = content
-			} else if name == "title" {
-				doc.Preview.Title = content
-			} else if name == "description" {
-				doc.Preview.Description = content
-			}
-		} else if n.Type == html.ElementNode && n.Data == "link" {
-			var rel, href string
-			for _, attr := range n.Attr {
-				if attr.Key == "rel" {
-					rel = attr.Val
-				} else if attr.Key == "href" {
-					href = attr.Val
-				}
-			}
-			if rel == "icon" {
-				doc.Preview.Icon = href
-			}
-		} else if n.Type == html.ElementNode && n.Data == "img" {
-			for _, attr := range n.Attr {
-				if attr.Key == "src" {
-					doc.Preview.Images = append(doc.Preview.Images, attr.Val)
-					break
-				}
-			}
+	// Recursive function to traverse the HTML tree
+	var traverse func(*html.Node)
+	traverse = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			s.processNode(n, doc)
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
+			traverse(c)
 		}
 	}
-	f(node)
+	traverse(node)
 
 	// Setting the link field to the URL of the page
-	doc.Preview.Link = scraper.getUrl()
+	doc.Preview.Link = s.getTargetURL()
 
 	return nil
 }
 
-func avoidByte(b byte) bool {
-	// List of bytes to avoid, e.g. spaces, newlines, etc.
+// processNode processes a single HTML node and updates the document preview accordingly
+func (s *Scraper) processNode(n *html.Node, doc *Document) {
+	switch n.Data {
+	case "meta":
+		s.processMetaNode(n, doc)
+	case "link":
+		s.processLinkNode(n, doc)
+	case "img":
+		s.processImageNode(n, doc)
+	}
+}
+
+// processMetaNode processes a meta node and updates the document preview
+func (s *Scraper) processMetaNode(n *html.Node, doc *Document) {
+	var name, content string
+	for _, attr := range n.Attr {
+		if attr.Key == "name" {
+			name = attr.Val
+		} else if attr.Key == "content" {
+			content = attr.Val
+		}
+	}
+
+	switch name {
+	case "icon":
+		doc.Preview.Icon = content
+	case "name":
+		doc.Preview.Name = content
+	case "title":
+		doc.Preview.Title = content
+	case "description":
+		doc.Preview.Description = content
+	}
+}
+
+// processLinkNode processes a link node and updates the document preview
+func (s *Scraper) processLinkNode(n *html.Node, doc *Document) {
+	var rel, href string
+	for _, attr := range n.Attr {
+		if attr.Key == "rel" {
+			rel = attr.Val
+		} else if attr.Key == "href" {
+			href = attr.Val
+		}
+	}
+	if rel == "icon" {
+		doc.Preview.Icon = href
+	}
+}
+
+// processImageNode processes an image node and updates the document preview
+func (s *Scraper) processImageNode(n *html.Node, doc *Document) {
+	for _, attr := range n.Attr {
+		if attr.Key == "src" {
+			doc.Preview.Images = append(doc.Preview.Images, attr.Val)
+			break
+		}
+	}
+}
+
+// isAvoidableByte checks if a byte should be avoided when escaping a URL
+func isAvoidableByte(b byte) bool {
 	avoid := []byte{' ', '\n', '\r'}
 	for _, v := range avoid {
 		if b == v {
@@ -218,8 +260,8 @@ func avoidByte(b byte) bool {
 	return false
 }
 
-func escapeByte(b byte) bool {
-	// List of bytes to escape
+// shouldEscapeByte checks if a byte should be escaped when creating a URL
+func shouldEscapeByte(b byte) bool {
 	escape := []byte{'&', '?', '=', '#', '%'}
 	for _, v := range escape {
 		if b == v {

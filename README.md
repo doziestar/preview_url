@@ -1,11 +1,143 @@
-This code is a Go implementation of a link preview scraper. Given a URL, it can fetch the contents of the web page at that URL and extract some metadata (icon, name, title, description, images, and link) to create a DocumentPreview struct. This struct can be embedded in a Document struct which also contains the HTML contents of the page in a bytes.Buffer.
+# Preview_url
 
-The process of creating the preview is initiated by calling the GetLinkPreviewItems(uri string, maxRedirect int) function, which takes in a string containing a URL and an integer specifying the maximum number of redirects to follow. This function then creates a new Scraper struct, sets the Url and MaxRedirect fields, and then calls the GetLinkPreviewItems() method on the struct which performs the actual scraping.
+This package provides functionality to scrape and parse metadata from a given URL. The metadata can be used to generate a link preview, similar to what you might see in a messaging app when a link is shared. The package provides an easy-to-use interface to initialize a new scraper, fetch, and parse the document for preview metadata.
 
-The Scraper struct has a Url field, which is a pointer to a url.URL struct representing the URL to be scraped, and a MaxRedirect field, which stores the maximum number of redirects to follow.
+## Installation
+```
+go get github.com/doziestar/preview_url
+```
 
-The Scraper struct also has a EscapedFragmentUrl field which is used to store a modified URL that includes a "escaped_fragment" parameter, which some websites use to provide alternative content for crawlers, if the original URL contains a "#!" fragment. This field is used in the getUrl() method which returns either the EscapedFragmentUrl or Url field depending on if a EscapedFragmentUrl is present.
+## Usage
 
-The Scraper struct has a toFragmentUrl() method that modifies the URL by replacing the "#!" fragment with a "escaped_fragment" parameter, when the URL contains a "#!" fragment, in order to provide alternative content for the scraper.
+To use this package, import it into your Go code, create a new scraper with the URL and maximum number of redirects, then call GetPreviewMetadata() to retrieve the document's preview data.
+    
+    ```go
+    import (
+        "fmt"
+        "github.com/doziestar/preview_url"
+    )
 
-The Scraper struct has a getDocument() method that is used to fetch the HTML contents of the page at the specified URL, either the Url or EscapedFragmentUrl fields.
+    scraper, err := preview_url.NewScraper(""http://example.com", 10)
+    if err != nil {
+    log.Fatal(err)
+    }
+    
+    doc, err := scraper.GetPreviewMetadata()
+    if err != nil {
+    log.Fatal(err)
+    }
+    
+    fmt.Println(doc.Preview.Title)
+    fmt.Println(doc.Preview.Description)
+    fmt.Println(doc.Preview.Images)
+    ```
+
+### Dependencies
+
+This package relies on the `net/http` and `net/url` packages from the standard library, as well as `golang.org/x/net/html` for parsing HTML.
+
+### Testing
+Unit tests for this package can be written using Go's built-in testing framework. These tests can check that the scraper is correctly initializing, that it is handling redirects properly, and that it is correctly parsing the HTML and extracting the preview metadata.
+
+### Structs 
+
+The scraper uses the following structs to store the scraper results and the preview metadata.
+
+```go
+type Scraper struct {
+	BaseURL            *url.URL
+	EscapedFragmentURL *url.URL
+	MaxRedirects       int
+	client             *http.Client
+}
+
+type Document struct {
+	Body    bytes.Buffer
+	Preview DocumentPreview
+}
+
+type DocumentPreview struct {
+	Icon        string
+	Name        string
+	Title       string
+	Description string
+	Images      []string
+	Link        string
+}
+```
+
+### Functions and Methods
+### `NewScraper`
+This function initializes a new Scraper.
+    
+    ```go
+    func NewScraper(uri string, maxRedirects int) (*Scraper, error)
+    ```
+
+- uri - The URL to be scraped.
+- maxRedirects - The maximum number of redirects allowed.
+
+GetPreviewMetadata
+This method fetches and parses the document for preview metadata.
+    
+    ```go
+    func (s *Scraper) GetPreviewMetadata() (*Document, error)
+    ```
+
+- Returns a pointer to a Document struct and an error.
+- The Document struct contains the scraped document's body and preview metadata.
+- The error is nil if the document was successfully scraped and parsed.
+
+### `getEscapedFragmentURL`
+This method returns the URL with the escaped fragment.
+    
+    ```go
+    func (s *Scraper) getEscapedFragmentURL() (*url.URL, error)
+    ```
+
+- Returns a pointer to a url.URL struct and an error.
+- The url.URL struct contains the URL with the escaped fragment.
+- The error is nil if the URL was successfully escaped.
+
+### `requiresEscapedFragmentURL`
+This method returns true if the URL requires an escaped fragment.
+    
+    ```go
+    func (s *Scraper) requiresEscapedFragmentURL() bool
+    ```
+
+- Returns a boolean value.
+- The boolean value is true if the URL requires an escaped fragment.
+
+### `createEscapedFragmentURL`
+This method returns the URL with the escaped fragment.
+    
+    ```go
+    func (s *Scraper) createEscapedFragmentURL() error
+    ```
+
+- Returns an error.
+- The error is nil if the URL was successfully escaped.
+
+### `getTargetURL`
+This method returns the target URL.
+    
+    ```go
+    func (s *Scraper) getTargetURL() string
+    ```
+
+- Returns a string.
+- The string is the target URL.
+
+### `parseHTML`
+
+This method parses the HTML document for preview metadata.
+    
+    ```go
+    func (s *Scraper) parseHTML(htmlContent []byte, doc *Document) error
+
+    ```
+
+- Returns an error.
+- The error is nil if the HTML was successfully parsed.
+

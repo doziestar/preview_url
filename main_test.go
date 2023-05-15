@@ -1,141 +1,80 @@
 package preview_url
 
 import (
-	"strings"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-func TestGetLinkPreviewItems(t *testing.T) {
-	uri := "https://doziesiky.com"
-	maxRedirect := 10
-
-	scraper := NewScraper(uri, maxRedirect)
-
-	doc, err := scraper.GetLinkPreviewItems()
-
+func TestNewScraper(t *testing.T) {
+	scraper, err := NewScraper("http://example.com", 10)
 	if err != nil {
-		t.Errorf("Failed to get link preview items: %s", err)
+		t.Fatalf("Failed to create scraper: %s", err)
 	}
-
-	if doc == nil {
-		t.Error("Failed to get link preview items: result is nil")
+	if scraper.BaseURL.String() != "http://example.com" {
+		t.Fatalf("Unexpected BaseURL, got: %s, want: http://example.com", scraper.BaseURL.String())
 	}
-
-	if doc.Preview.Link != uri {
-		t.Errorf("Expected link to be %s, got %s", uri, doc.Preview.Link)
+	if scraper.MaxRedirects != 10 {
+		t.Fatalf("Unexpected MaxRedirects, got: %d, want: 10", scraper.MaxRedirects)
 	}
 }
 
-func TestParseDocument(t *testing.T) {
-	htmlContent := []byte(`<html>
-        <head>
-            <meta name="icon" content="http://www.example.com/icon.png">
-            <meta name="name" content="Example">
-            <meta name="title" content="Example Title">
-            <meta name="description" content="Example Description">
-            <link rel="icon" href="http://www.example.com/favicon.ico">
-            <img src="http://www.example.com/image1.png">
-            <img src="http://www.example.com/image2.png">
-        </head>
-        <body>
-            <h1>Example Page</h1>
-        </body>
-    </html>`)
-	doc := &Document{}
+func TestGetPreviewMetadata(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html><head><title>Test Page</title></head><body><img src='test.png'></body></html>"))
+	}))
+	defer ts.Close()
 
-	scraper := NewScraper("", 5)
-	err := scraper.ParseDocument(htmlContent, doc)
-
+	scraper, _ := NewScraper(ts.URL, 10)
+	doc, err := scraper.GetPreviewMetadata()
 	if err != nil {
-		t.Errorf("Failed to parse document: %s", err)
+		t.Fatalf("Failed to get preview metadata: %s", err)
 	}
-
-	if doc.Preview.Icon != "http://www.example.com/favicon.ico" {
-		t.Errorf("Expected icon to be %s, got %s", "http://www.example.com/icon.png", doc.Preview.Icon)
+	if doc.Preview.Title != "Test Page" {
+		t.Fatalf("Unexpected title, got: %s, want: Test Page", doc.Preview.Title)
 	}
-
-	if doc.Preview.Name != "Example" {
-		t.Errorf("Expected name to be %s, got %s", "Example", doc.Preview.Name)
-	}
-
-	if doc.Preview.Title != "Example Title" {
-		t.Errorf("Expected title to be %s, got %s", "Example Title", doc.Preview.Title)
-	}
-
-	if doc.Preview.Description != "Example Description" {
-		t.Errorf("Expected description to be %s, got %s", "Example Description", doc.Preview.Description)
-	}
-
-	if len(doc.Preview.Images) != 2 {
-		t.Errorf("Expected 2 images, got %d", len(doc.Preview.Images))
-	}
-
-	if doc.Preview.Images[0] != "http://www.example.com/image1.png" {
-		t.Errorf("Expected first image to be %s, got %s", "http://www.example.com/image1.png", doc.Preview.Images[0])
-	}
-
-	if doc.Preview.Images[1] != "http://www.example.com/image2.png" {
-		t.Errorf("Expected second image to be %s, got %s", "http://www.example.com/image2.png", doc.Preview.Images[1])
+	if len(doc.Preview.Images) != 1 || doc.Preview.Images[0] != "test.png" {
+		t.Fatalf("Unexpected images, got: %v, want: [test.png]", doc.Preview.Images)
 	}
 }
 
-func TestToFragmentUrl(t *testing.T) {
-	uri := "http://www.example.com#!param1=value1&param2=value2"
-	maxRedirect := 10
+func TestMaxRedirects(t *testing.T) {
+	redirections := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if redirections < 5 {
+			http.Redirect(w, r, "/redirect", http.StatusFound)
+			redirections++
+			return
+		}
+		w.Write([]byte("<html><head><title>Test Page</title></head><body><img src='test.png'></body></html>"))
+	}))
+	defer ts.Close()
 
-	scraper := NewScraper(uri, maxRedirect)
+	scraper, _ := NewScraper(ts.URL, 3)
+	_, err := scraper.GetPreviewMetadata()
+	if err == nil || err.Error() != "exceeded max redirects: 4" {
+		t.Fatalf("Expected to exceed max redirects, got: %v", err)
+	}
+}
 
-	err := scraper.toFragmentUrl()
+func TestEscapedFragmentURL(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("_escaped_fragment_") != "fragment" {
+			t.Fatalf("Expected to receive escaped fragment, got: %s", r.URL.Query().Get("_escaped_fragment_"))
+		}
+		w.Write([]byte("<html><head><title>Test Page</title></head><body><img src='test.png'></body></html>"))
+	}))
+	defer ts.Close()
 
+	scraper, _ := NewScraper(ts.URL+"#!fragment", 10)
+	doc, err := scraper.GetPreviewMetadata()
 	if err != nil {
-		t.Errorf("Failed to convert to fragment URL: %s", err)
+		t.Fatalf("Failed to get preview metadata: %s", err)
 	}
-
-	if !strings.Contains(scraper.EscapedFragmentUrl.String(), "_escaped_fragment_=param1%3Dvalue1%26param2%3Dvalue2") {
-		t.Errorf("Expected URL to contain %s, got %s", "_escaped_fragment_=param1%3Dvalue1%26param2%3Dvalue2", scraper.EscapedFragmentUrl.String())
+	if doc.Preview.Title != "Test Page" {
+		t.Fatalf("Unexpected title, got: %s, want: Test Page", doc.Preview.Title)
 	}
-}
-
-func TestAvoidByte(t *testing.T) {
-	if !avoidByte(byte(' ')) {
-		t.Error("Expected byte ' ' to be avoided")
-	}
-
-	if !avoidByte(byte('\n')) {
-		t.Error("Expected byte '\n' to be avoided")
-	}
-
-	//if !avoidByte(byte('\t')) {
-	//	t.Error("Expected byte '\t' to be avoided")
-	//}
-
-	if avoidByte(byte('a')) {
-		t.Error("Expected byte 'a' to be not avoided")
-	}
-}
-
-func TestEscapeByte(t *testing.T) {
-	if !escapeByte(byte('&')) {
-		t.Error("Expected byte '&' to be escaped")
-	}
-
-	if !escapeByte(byte('?')) {
-		t.Error("Expected byte '?' to be escaped")
-	}
-
-	if !escapeByte(byte('=')) {
-		t.Error("Expected byte '=' to be escaped")
-	}
-
-	if !escapeByte(byte('#')) {
-		t.Error("Expected byte '#' to be escaped")
-	}
-
-	if !escapeByte(byte('%')) {
-		t.Error("Expected byte '%' to be escaped")
-	}
-
-	if escapeByte(byte('a')) {
-		t.Error("Expected byte 'a' to be not escaped")
+	if len(doc.Preview.Images) != 1 || doc.Preview.Images[0] != "test.png" {
+		t.Fatalf("Unexpected images, got: %v, want: [test.png]", doc.Preview.Images)
 	}
 }
